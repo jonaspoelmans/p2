@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# bin/compile <build-dir> <cache-dir>
+
+set -e
+set -o pipefail
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+
+function indent() {
+  c='s/^/       /'
+  case $(uname) in
+    Darwin) sed -l "$c";;
+    *)      sed -u "$c";;
+  esac
+}
+
+if [ -f "$BUILD_DIR/.qt_runtime" ]; then
+  QT_VERSION=$(cat $BUILD_DIR/.qt_runtime)
+fi
+
+QT_VERSION=${QT_VERSION:-5.4.1}
+QT_MAJOR_VERSION=$(echo $QT_VERSION | cut -d \. -f 1,2)
+QT_BUILD_DIR="$BUILD_DIR/.qtcs/Qt"
+QT_URL="https://s3-eu-west-1.amazonaws.com/qtc-runtime-buildpacks/binaries/lucid/qt-$QT_VERSION-linux-x64.tar.gz"
+
+mkdir -p $QT_BUILD_DIR
+mkdir -p "$CACHE_DIR/.qtcs"
+
+if [ -f "$CACHE_DIR/.qtcs/Qt/$QT_MAJOR_VERSION/gcc_64/lib/libQt5Core.so.$QT_VERSION" ]; then
+  echo "Using cached copy of Qt $QT_VERSION"
+  rm -rf $QT_BUILD_DIR
+  cp -ar "$CACHE_DIR/.qtcs/Qt" "$BUILD_DIR/.qtcs/"
+else
+  if curl --output /dev/null --silent --head --fail "$QT_URL"; then
+    echo "Installing Qt $QT_VERSION"
+    curl $QT_URL -s -o - | tar xzf - -C $QT_BUILD_DIR
+    chmod +x "$QT_BUILD_DIR/$QT_MAJOR_VERSION/gcc_64/bin"
+
+    # Copy Qt runtime to cache
+    if [ -d "$CACHE_DIR/.qtcs/Qt" ]; then
+      rm -rf "$CACHE_DIR/.qtcs/Qt"
+    fi
+    cp -ar "$QT_BUILD_DIR" "$CACHE_DIR/.qtcs/"
+  else
+    echo "Qt $QT_VERSION not supported"
+    exit 1
+  fi
+fi
+
+echo "-----> Setting up Qt $QT_VERSION"
+ln -s "$BUILD_DIR/.qtcs" "/app/.qtcs"
+PATH="/app/.qtcs/Qt/$QT_MAJOR_VERSION/gcc_64/bin:$PATH"
+
+cd $BUILD_DIR
+if [ ! -z "$QMAKE_ARGS" ]; then
+  echo "-----> Configuring with qmake $QMAKE_ARGS"
+else
+  echo "-----> Configuring with qmake"
+fi
+qmake $QMAKE_ARGS 2>&1 | indent
+
+# make
+echo "-----> Compiling with make"
+make 2>&1 | indent
